@@ -68,15 +68,49 @@ def YoloConv(filters, name=None):
             inputs = Input(x_in[0].shape[1:]), Input(x_in[1].shape[1:])
             x, x_skip = inputs
 
-            x = DarknetConv(x, filter, 1)
-            x = DarknetConv(x, filter*2, 3)
             x = DarknetConv(x, filters, 1)
-            x = DarknetConv(x, filters * 2, 3)
-            x = DarknetConv(x, filters, 1)
+            x = UpSampling2D(x)(x)
+            x = Concatenate()([x, x_skip])
+        else:
+            x = inputs = Input(x_in.shape[1:])
 
-            return Model(inputs, x, name=name)(x_in)
-        return yolo_conv
+        x = DarknetConv(x, filter, 1)
+        x = DarknetConv(x, filter * 2, 3)
+        x = DarknetConv(x, filters, 1)
+        x = DarknetConv(x, filters * 2, 3)
+        x = DarknetConv(x, filters, 1)
 
-    
+        return Model(inputs, x, name=name)(x_in)
+    return yolo_conv
 
+def YoloOutput(filters, anchors, classes, name=None):
+    def yolo_output(x_in):
+        x = inputs = Input(x_in.shape[1:])
+        x = DarknetConv(x, filters * 2, 3)
+        x = DarknetConv(x, anchors * (classes + 5), 1, batch_norm=False)
+        x = Lambda(lambda x: tf.reshape(x, (-1, tf.shape(x)[1], tf.shape(x)[2], anchors, classes+5)))(x)
 
+        return tf.keras.Model(inputs, x, name=name)(x_in)
+    return yolo_output
+
+def yolo_boxes(pred, anchors, classes):
+    grid_size = tf.shape(pred)[1]
+    box_xy, box_wh, objectness, class_probs = tf.split(pred, (2, 2, 1, classes), axis=-1)
+
+    box_xy = tf.sigmoid(box_xy)
+    objectness = tf.sigmoid(objectness)
+    class_probs = tf.sigmoid(class_probs)
+    pred_box = tf.concat((box_xy, box_wh), axis=-1)
+
+    grid = tf.meshgrid(tf.range(grid_size), tf.range(grid_size))
+    grid = tf.expand_dims(tf.stack(grid, axis=-1), axis=2)
+
+    box_xy = (box_xy + tf.cast(grid, tf.float32)) / \
+        tf.cast(grid_size, tf.float32)
+    box_wh = tf.exp(box_wh) * anchors
+
+    box_x1y1 = box_xy - box_wh / 2
+    box_x2y2 = box_xy + box_wh / 2
+    bbox = tf.concat([box_x1y1, box_x2y2], axis=-1)
+
+    return bbox, objectness, class_probs, pred_box
